@@ -1,0 +1,150 @@
+---
+title: Processing the Cao Perturb-seq dataset
+author: Aaron Lun
+---
+
+```{r style, echo=FALSE, results='hide', message=FALSE}
+library(BiocStyle)
+knitr::opts_chunk$set(error=FALSE, message=FALSE, warning=FALSE)
+```
+
+# Downloading the data
+
+We obtain a Perturb-seq dataset by [Cao and Nan](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE273677).
+This uses the standard 10X layout:
+
+```{r}
+dir.create("raw_data", showWarnings=FALSE)
+download_cache <- function(base.url, fname) {
+    path <- file.path("raw_data", fname)
+    if (!file.exists(path)) {
+        download.file(paste0(base.url, URLencode(fname, reserved=TRUE)), path)
+    }
+    path
+}
+
+url.template <- "https://www.ncbi.nlm.nih.gov/geo/download/?acc=%s&format=file&file="
+samples <- c(
+    GSM8434996="GWAS-rep1",
+    GSM8434997="GWAS-rep2",
+    GSM8434998="GWAS-rep3",
+    GSM8434999="GWAS-rep4",
+    GSM8435000="GWAS-rep5",
+    GSM8435001="GWAS-rep6",
+    GSM8435002="GWAS-rep7",
+    GSM8435003="RQC-rep1",
+    GSM8435004="RQC-rep2"
+)
+
+collected <- list()
+library(SingleCellExperiment)
+for (n in names(samples)) {
+    base.url <- sprintf(url.template, n)
+    prefix <- paste0(n, "_", samples[[n]])
+    barcode.path <- download_cache(base.url, paste0(prefix, "_barcodes.tsv.gz"))
+    features.path <- download_cache(base.url, paste0(prefix, "_features.tsv.gz"))
+    matrix.path <- download_cache(base.url, paste0(prefix, "_matrix.mtx.gz"))
+}
+```
+
+# Loading the counts
+
+Then we just load everything in with `r Biocpkg("DropletUtils")`.
+First we'll do the GWAS experiment:
+
+```{r}
+library(DropletUtils)
+gwas.samples <- samples[startsWith(samples, "GWAS")]
+gwas.sce <- read10xCounts(
+    file.path("raw_data", paste0(names(gwas.samples), "_", gwas.samples, "_")),
+    type="prefix",
+    mtx.class="SVT_SparseMatrix"
+)
+
+# Simplify the samples.
+gwas.sce$Sample <- sub("_.*", "", basename(gwas.sce$Sample))
+
+# Split by feature type, but no need for the actual column anymore.
+gwas.type <- rowData(gwas.sce)$Type
+rowData(gwas.sce)$Type <- NULL
+gwas.sce <- splitAltExps(gwas.sce, gwas.type)
+
+# Simplify the symbol designations for the guides.
+rowData(altExp(gwas.sce))$Symbol <- sub("-[0-9]+$", "", rowData(altExp(gwas.sce))$Symbol)
+gwas.sce
+```
+
+```{r, echo=FALSE}
+gc(full=TRUE)
+```
+
+And we do the same for the RQC samples:
+
+```{r}
+library(DropletUtils)
+rqc.samples <- samples[startsWith(samples, "RQC")]
+rqc.sce <- read10xCounts(
+    file.path("raw_data", paste0(names(rqc.samples), "_", rqc.samples, "_")),
+    type="prefix",
+    mtx.class="SVT_SparseMatrix"
+)
+
+rqc.sce$Sample <- sub("_.*", "", basename(rqc.sce$Sample))
+
+rqc.type <- rowData(rqc.sce)$Type
+rowData(rqc.sce)$Type <- NULL
+rqc.sce <- splitAltExps(rqc.sce, rqc.type)
+
+rowData(altExp(rqc.sce))$Symbol <- sub("-[0-9]+$", "", rowData(altExp(rqc.sce))$Symbol)
+rqc.sce
+```
+
+```{r, echo=FALSE}
+gc(full=TRUE)
+```
+
+# Saving to file
+
+We apply some polish to optimize the disk space:
+
+```{r}
+library(scRNAseq)
+gwas.sce <- polishDataset(gwas.sce)
+gwas.sce
+rqc.sce <- polishDataset(rqc.sce)
+rqc.sce
+```
+
+We now save all of the relevant components of `sce` to file for upload.
+
+```{r}
+output.dir <- "2025-10-10_output"
+unlink(output.dir, recursive=TRUE)
+dir.create(output.dir)
+
+meta <- list(
+    title="Perturb-seq (CRISPR-based screens with single-cell RNA-sequencing readouts) screens Endoc-betaH1 cell line targeting 61 T2D coding variants genes and 40 RQC function genes.",
+    description="Two set of genes were selected for Perturb-seq experiments. sgRNAs targeting each gene were selected according to previously published algorithm and cloned into the lentivirus construct containing sgRNA cassette available for 3’ direct capture Perturb-seq: hU6-gRNA with CR1CS1-EF1α-BFP.",
+    taxonomy_id="9606",
+    genome="GRCh38",
+    sources=list(
+        list(provider="GEO", id="GSE273677")
+    ),
+    maintainer_name="Aaron Lun",
+    maintainer_email="infinite.monkeys.with.keyboards@gmail.com"
+)
+
+gwas.meta <- meta
+gwas.meta$description <- paste0(gwas.meta$description, "\n\nThis object contains Perturb-seq data for the set of 61 genes with T2D coding variants.")
+saveDataset(gwas.sce, file.path(output.dir, "gwas"), gwas.meta)
+
+rqc.meta <- meta
+rqc.meta$description <- paste0(rqc.meta$description, "\n\nThis object contains Perturb-seq data for the set of 40 RQC function genes.")
+saveDataset(rqc.sce, file.path(output.dir, "rqc"), meta)
+```
+
+# Session information {-}
+
+```{r}
+sessionInfo()
+```
